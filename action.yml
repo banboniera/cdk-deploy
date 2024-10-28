@@ -1,0 +1,99 @@
+name: "Deploy CDK Stack"
+description: "Deploys a CDK stack with validation and reporting"
+
+inputs:
+  node-version:
+    description: "Node.js version to use"
+    required: false
+    default: "22"
+  cdk-version:
+    description: "AWS CDK version to install"
+    required: true
+  aws-region:
+    description: "AWS Region"
+    required: true
+  aws-access-key-id:
+    description: "AWS Access Key ID"
+    required: true
+  aws-secret-access-key:
+    description: "AWS Secret Access Key"
+    required: true
+  working-directory:
+    description: "Working directory for npm commands"
+    required: false
+    default: "."
+  stack-name:
+    description: "Name of the stack to deploy"
+    required: true
+
+outputs:
+  deployment-status:
+    description: "Status of the deployment (success/failure)"
+    value: ${{ steps.deploy.outputs.status }}
+  start-time:
+    description: "Deployment start time"
+    value: ${{ steps.deploy.outputs.START_TIME }}
+  end-time:
+    description: "Deployment end time"
+    value: ${{ steps.deploy.outputs.END_TIME }}
+
+runs:
+  using: composite
+  steps:
+    # Step 1
+    - name: Setup CDK Environment
+      uses: banboniera/setup-cdk@v1
+      with:
+        node-version: ${{ inputs.node-version }}
+        cdk-version: ${{ inputs.cdk-version }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        working-directory: ${{ inputs.working-directory }}
+
+    # Step 2
+    - name: Download Synthesized Template
+      uses: actions/download-artifact@v4
+      with:
+        name: cdk-synth
+        path: ./cdk.out
+
+    # Step 3
+    - name: Validate Stack
+      shell: bash
+      run: |
+        echo "::group::Stack Validation"
+        if ! cdk diff ${{ inputs.stack-name }} --app cdk.out; then
+          echo "::error::Stack validation failed - detected unexpected changes"
+          echo "Please review the diff output above"
+          exit 1
+        fi
+        echo "::endgroup::"
+
+    # Step 4
+    - name: Deploy Stack
+      id: deploy
+      shell: bash
+      run: |
+        echo "START_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+        if cdk deploy ${{ inputs.stack-name }} --require-approval never --app cdk.out; then
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "status=failure" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        echo "END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+
+    # Step 5
+    - name: Deployment Summary
+      if: always()
+      shell: bash
+      run: |
+        echo "### Stack Deployment: ${{ inputs.stack-name }} :rocket:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ steps.deploy.outputs.status == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Start Time**: ${{ steps.deploy.outputs.START_TIME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **End Time**: ${{ steps.deploy.outputs.END_TIME }}" >> $GITHUB_STEP_SUMMARY
+        if [[ "${{ steps.deploy.outputs.START_TIME }}" != "" && "${{ steps.deploy.outputs.END_TIME }}" != "" ]]; then
+          duration=$(( $(date -d "${{ steps.deploy.outputs.END_TIME }}" +%s) - $(date -d "${{ steps.deploy.outputs.START_TIME }}" +%s) ))
+          echo "- **Duration**: ${duration} seconds" >> $GITHUB_STEP_SUMMARY
+        fi
