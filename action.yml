@@ -1,5 +1,8 @@
 name: "Deploy CDK Stack"
 description: "Deploys a CDK stack with validation and reporting"
+branding:
+  icon: "arrow-up-circle"
+  color: "blue"
 
 inputs:
   node-version:
@@ -30,17 +33,23 @@ outputs:
   deployment-status:
     description: "Status of the deployment (success/failure)"
     value: ${{ steps.deploy.outputs.status }}
-  start-time:
-    description: "Deployment start time"
-    value: ${{ steps.deploy.outputs.START_TIME }}
-  end-time:
-    description: "Deployment end time"
-    value: ${{ steps.deploy.outputs.END_TIME }}
 
 runs:
   using: composite
   steps:
     # Step 1
+    - name: Download Synthesized Template
+      uses: actions/download-artifact@v4
+      with:
+        name: cdk-synth
+        path: ${{ inputs.working-directory }}/cdk.out
+
+    # Step 2
+    - name: Prepare CDK Environment
+      shell: bash
+      run: mv ./cdk.out/package*.json .
+
+    # Step 3
     - name: Setup CDK Environment
       uses: banboniera/setup-cdk@v1
       with:
@@ -51,49 +60,52 @@ runs:
         aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
         working-directory: ${{ inputs.working-directory }}
 
-    # Step 2
-    - name: Download Synthesized Template
-      uses: actions/download-artifact@v4
-      with:
-        name: cdk-synth
-        path: ./cdk.out
-
-    # Step 3
+    # Step 4
     - name: Validate Stack
       shell: bash
       run: |
         echo "::group::Stack Validation"
-        if ! cdk diff ${{ inputs.stack-name }} --app cdk.out; then
+        if ! cdk diff ${{ inputs.stack-name }} --app ${{ inputs.working-directory }}/cdk.out; then
           echo "::error::Stack validation failed - detected unexpected changes"
-          echo "Please review the diff output above"
           exit 1
         fi
         echo "::endgroup::"
 
-    # Step 4
+    # Step 5
     - name: Deploy Stack
       id: deploy
       shell: bash
       run: |
         echo "START_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
-        if cdk deploy ${{ inputs.stack-name }} --require-approval never --app cdk.out; then
-          echo "status=success" >> $GITHUB_OUTPUT
+
+        if cdk deploy ${{ inputs.stack-name }} --require-approval never --app ${{ inputs.working-directory }}/cdk.out; then
+          STATUS="success"
         else
-          echo "status=failure" >> $GITHUB_OUTPUT
+          STATUS="failure"
+          echo "status=${STATUS}" >> $GITHUB_OUTPUT
+          END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "END_TIME=${END_TIME}" >> $GITHUB_OUTPUT
           exit 1
         fi
+
+        echo "status=${STATUS}" >> $GITHUB_OUTPUT
         echo "END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
-    # Step 5
+    # Step 6
     - name: Deployment Summary
       if: always()
       shell: bash
       run: |
         echo "### Stack Deployment: ${{ inputs.stack-name }} :rocket:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Status**: ${{ steps.deploy.outputs.status == 'success' && '✅ Success' || '❌ Failed' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Start Time**: ${{ steps.deploy.outputs.START_TIME }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **End Time**: ${{ steps.deploy.outputs.END_TIME }}" >> $GITHUB_STEP_SUMMARY
-        if [[ "${{ steps.deploy.outputs.START_TIME }}" != "" && "${{ steps.deploy.outputs.END_TIME }}" != "" ]]; then
-          duration=$(( $(date -d "${{ steps.deploy.outputs.END_TIME }}" +%s) - $(date -d "${{ steps.deploy.outputs.START_TIME }}" +%s) ))
+        if [ "${{ steps.deploy.outputs.status }}" == "success" ]; then
+          echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- **Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        if [[ "${{ steps.deploy.outputs.START_TIME }}" && "${{ steps.deploy.outputs.END_TIME }}" ]]; then
+          start_sec=$(date -d "${{ steps.deploy.outputs.START_TIME }}" +%s)
+          end_sec=$(date -d "${{ steps.deploy.outputs.END_TIME }}" +%s)
+          duration=$(( end_sec - start_sec ))
           echo "- **Duration**: ${duration} seconds" >> $GITHUB_STEP_SUMMARY
         fi
