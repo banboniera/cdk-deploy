@@ -18,23 +18,34 @@ steps:
   - name: Checkout Code
     uses: actions/checkout@v4
 
-  # First, synthesize your CDK app and save the output
-  - name: Synthesize CDK App
-    run: npx cdk synth
+  - name: Setup CDK Environment
+    uses: banboniera/setup-cdk@v1
+    with:
+      cdk-version: ${{ vars.CDK_VERSION }}
+      aws-region: ${{ vars.AWS_REGION }}
+      aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CDK }}
+      aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CDK }}
 
-  # Save the synthesized template as an artifact
+  - name: Synthesize CDK App
+    run: npm run synth:staging
+
+  - name: Prepare Deployment Artifacts
+    run: |
+      mkdir -p artifacts
+      cp cdk.out/* artifacts/
+      cp package.json package-lock.json artifacts/
+
   - name: Upload Synthesized Template
     uses: actions/upload-artifact@v4
     with:
       name: cdk-synth
-      path: cdk.out/
+      path: artifacts/
       retention-days: 1
 
-  # Deploy the stack
   - name: Deploy CDK Stack
     uses: banboniera/deploy-cdk-stack@v1
     with:
-      cdk-version: '2.161.0'
+      cdk-version: '2.164.1'
       aws-region: 'eu-central-1'
       aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
       aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -108,11 +119,18 @@ jobs:
         run: npm run synth:staging
 
       # Step 4
+      - name: Prepare Deployment Artifacts
+        run: |
+          mkdir -p artifacts
+          cp cdk.out/* artifacts/
+          cp package.json package-lock.json artifacts/
+
+      # Step 5
       - name: Upload Synthesized Template
         uses: actions/upload-artifact@v4
         with:
           name: cdk-synth
-          path: cdk.out/
+          path: artifacts/
           retention-days: 1
 
   # Job 2

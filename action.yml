@@ -41,6 +41,13 @@ runs:
   using: composite
   steps:
     # Step 1
+    - name: Download Synthesized Template
+      uses: actions/download-artifact@v4
+      with:
+        name: cdk-synth
+        path: .
+
+    # Step 2
     - name: Setup CDK Environment
       uses: banboniera/setup-cdk@v1
       with:
@@ -50,13 +57,6 @@ runs:
         aws-access-key-id: ${{ inputs.aws-access-key-id }}
         aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
         working-directory: ${{ inputs.working-directory }}
-
-    # Step 2
-    - name: Download Synthesized Template
-      uses: actions/download-artifact@v4
-      with:
-        name: cdk-synth
-        path: ./cdk.out
 
     # Step 3
     - name: Validate Stack
