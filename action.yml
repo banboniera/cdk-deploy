@@ -5,10 +5,6 @@ branding:
   color: "blue"
 
 inputs:
-  node-version:
-    description: "Node.js version to use"
-    required: false
-    default: "22"
   cdk-version:
     description: "AWS CDK version to install"
     required: true
@@ -21,13 +17,21 @@ inputs:
   aws-secret-access-key:
     description: "AWS Secret Access Key"
     required: true
+  stack-name:
+    description: "Name of the stack to deploy"
+    required: true
   working-directory:
     description: "Working directory for npm commands"
     required: false
     default: "."
-  stack-name:
-    description: "Name of the stack to deploy"
-    required: true
+  node-version:
+    description: "Node.js version to use"
+    required: false
+    default: "22"
+  timeout-seconds:
+    description: "Timeout duration for deploying the CDK stack in seconds"
+    required: false
+    default: "1800" # 30 minutes in seconds
 
 outputs:
   deployment-status:
@@ -53,12 +57,12 @@ runs:
     - name: Setup CDK Environment
       uses: banboniera/setup-cdk@v1
       with:
-        node-version: ${{ inputs.node-version }}
         cdk-version: ${{ inputs.cdk-version }}
         aws-region: ${{ inputs.aws-region }}
         aws-access-key-id: ${{ inputs.aws-access-key-id }}
         aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
         working-directory: ${{ inputs.working-directory }}
+        node-version: ${{ inputs.node-version }}
 
     # Step 4
     - name: Validate Stack
@@ -69,6 +73,7 @@ runs:
           echo "::error::Stack validation failed - detected unexpected changes"
           exit 1
         fi
+        echo "Stack validation successful"
         echo "::endgroup::"
 
     # Step 5
@@ -76,19 +81,31 @@ runs:
       id: deploy
       shell: bash
       run: |
+        # Initialize status tracking
+        echo "status=pending" >> $GITHUB_OUTPUT
         echo "START_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
-        if cdk deploy ${{ inputs.stack-name }} --require-approval never --app ${{ inputs.working-directory }}/cdk.out; then
-          STATUS="success"
+        # Execute cdk deploy with timeout and proper error handling
+        if timeout ${{ inputs.timeout-seconds }} cdk deploy ${{ inputs.stack-name }} \
+          --require-approval never \
+          --app ${{ inputs.working-directory }}/cdk.out \
+          --outputs-file deployment-outputs.json; then
+          
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "Deployment completed successfully"
         else
-          STATUS="failure"
-          echo "status=${STATUS}" >> $GITHUB_OUTPUT
-          END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          echo "END_TIME=${END_TIME}" >> $GITHUB_OUTPUT
-          exit 1
+          EXIT_CODE=$?
+          echo "status=failure" >> $GITHUB_OUTPUT
+          
+          if [ $EXIT_CODE -eq 124 ]; then
+            echo "::error::Deployment timed out after ${{ inputs.timeout-seconds }} seconds"
+          else
+            echo "::error::Deployment failed with exit code $EXIT_CODE"
+          fi
+          
+          exit $EXIT_CODE
         fi
 
-        echo "status=${STATUS}" >> $GITHUB_OUTPUT
         echo "END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
     # Step 6
@@ -96,16 +113,44 @@ runs:
       if: always()
       shell: bash
       run: |
-        echo "### Stack Deployment: ${{ inputs.stack-name }} :rocket:" >> $GITHUB_STEP_SUMMARY
+        echo "### CDK Stack Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
+        echo "**Stack Name**: \`${{ inputs.stack-name }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "**Region**: \`${{ inputs.aws-region }}\`" >> $GITHUB_STEP_SUMMARY
+
+        # Status with emoji
         if [ "${{ steps.deploy.outputs.status }}" == "success" ]; then
-          echo "- **Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
+          echo "**Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
         else
-          echo "- **Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
         fi
 
+        # Calculate and display duration
         if [[ "${{ steps.deploy.outputs.START_TIME }}" && "${{ steps.deploy.outputs.END_TIME }}" ]]; then
           start_sec=$(date -d "${{ steps.deploy.outputs.START_TIME }}" +%s)
           end_sec=$(date -d "${{ steps.deploy.outputs.END_TIME }}" +%s)
-          duration=$(( end_sec - start_sec ))
-          echo "- **Duration**: ${duration} seconds" >> $GITHUB_STEP_SUMMARY
+          duration=$((end_sec - start_sec))
+          
+          # Format duration nicely
+          if [ $duration -ge 3600 ]; then
+            echo "**Duration**: $(($duration / 3600))h $(($duration % 3600 / 60))m $(($duration % 60))s" >> $GITHUB_STEP_SUMMARY
+          elif [ $duration -ge 60 ]; then
+            echo "**Duration**: $(($duration / 60))m $(($duration % 60))s" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Duration**: ${duration}s" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+
+        # Add deployment outputs if available
+        if [ -f deployment-outputs.json ]; then
+          echo "### Deployment Outputs 📋" >> $GITHUB_STEP_SUMMARY
+          echo "| Output Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|-------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse JSON and convert to table format
+          while IFS="=" read -r key value; do
+            # Remove quotes and formatting
+            value=$(echo "$value" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
+            # Add to table
+            echo "| $key | \`$value\` |" >> $GITHUB_STEP_SUMMARY
+          done < <(jq -r "to_entries | .[0].value | to_entries | .[] | .key + \"=\" + .value" deployment-outputs.json)
         fi

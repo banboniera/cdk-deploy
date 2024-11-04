@@ -5,10 +5,11 @@ A GitHub composite action that handles AWS CDK stack deployment with validation 
 ## Features
 
 - 🚀 Automated CDK stack deployment
-- 🔍 Pre-deployment stack validation
+- 🔍 Pre-deployment stack validation with diff checking
 - ⏱️ Deployment timing and duration tracking
-- 📊 Detailed deployment summary
+- 📊 Detailed deployment summary with JSON outputs
 - 🔄 Status reporting and error handling
+- ⏲️ Configurable deployment timeout
 - 📁 Supports custom working directory
 
 ## Usage
@@ -42,8 +43,8 @@ steps:
   - name: Deploy CDK Stack
     uses: banboniera/deploy-cdk-stack@v1
     with:
-      cdk-version: '2.164.1'
-      aws-region: 'eu-central-1'
+      cdk-version: ${{ vars.CDK_VERSION }}
+      aws-region: ${{ vars.AWS_REGION }}
       aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
       aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       stack-name: 'my-stack-name'
@@ -53,19 +54,38 @@ steps:
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `node-version` | The version of Node.js to use | false | `22` |
 | `cdk-version` | The version of AWS CDK to use | true | |
 | `aws-region` | The AWS region to deploy the stack to | true | |
 | `aws-access-key-id` | The AWS access key ID | true | |
 | `aws-secret-access-key` | The AWS secret access key | true | |
-| `working-directory` | Working directory for npm commands | false | `.` |
 | `stack-name` | The name of the stack to deploy | true | |
+| `working-directory` | Working directory for npm commands | false | `.` |
+| `node-version` | The version of Node.js to use | false | `22` |
+| `timeout-seconds` | Timeout duration for stack deployment in seconds | false | `1800` |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
 | `deployment-status` | The status of the deployment (success/failure) |
+
+## Deployment Summary
+
+The action provides a detailed deployment summary including:
+
+- Stack name and region
+- Deployment status with visual indicators
+- Deployment duration in human-readable format
+- JSON outputs from the CDK deployment (if any)
+
+## Error Handling
+
+The action includes comprehensive error handling:
+
+- Pre-deployment validation with `cdk diff`
+- Timeout monitoring and reporting
+- Detailed error messages with exit codes
+- Proper status propagation to GitHub Actions
 
 ## Example
 
@@ -83,15 +103,16 @@ jobs:
   build:
     name: Build and Synthesize
     runs-on: ubuntu-latest
-    environment: STAGING
+    environment: staging
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 2
 
     # Global Environment Variables:
     env:
       APP_NAME: ${{ vars.APP_NAME }}
-      ENVIRONMENT: Staging
+      ENVIRONMENT: staging
       DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
       VPS_IP: ${{ secrets.VPS_IP }}
 
@@ -132,8 +153,9 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-zone-${{ github.workflow }}
+      group: deploy-zone-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 5
 
     steps:
       # Step 1
@@ -152,8 +174,9 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-state-${{ github.workflow }}
+      group: deploy-state-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 5
 
     steps:
       # Step 1
@@ -172,8 +195,9 @@ jobs:
     needs: [deploy-zone]
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-security-resources-${{ github.workflow }}
+      group: deploy-security-resources-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 10
 
     steps:
       # Step 1
@@ -192,8 +216,9 @@ jobs:
     needs: [deploy-state, deploy-security-resources]
     runs-on: ubuntu-latest
     concurrency:
-      group: deploy-static-site-${{ github.workflow }}
+      group: deploy-static-site-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
+    timeout-minutes: 20
 
     steps:
       # Step 1
