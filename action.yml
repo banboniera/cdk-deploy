@@ -5,8 +5,8 @@ branding:
   color: "blue"
 
 inputs:
-  cdk-version:
-    description: "AWS CDK version to install"
+  stack-name:
+    description: "Name of the stack to deploy"
     required: true
   aws-region:
     description: "AWS Region"
@@ -17,17 +17,18 @@ inputs:
   aws-secret-access-key:
     description: "AWS Secret Access Key"
     required: true
-  stack-name:
-    description: "Name of the stack to deploy"
-    required: true
+  node-version:
+    description: "Node.js version to use (if not specified, version 20 will be used)"
+    required: false
+    default: "20"
+  cdk-version:
+    description: "AWS CDK version to install (if not specified, latest version will be installed)"
+    required: false
+    default: "latest"
   working-directory:
-    description: "Working directory for npm commands"
+    description: "Working directory for npm commands (if not specified, current directory will be used)"
     required: false
     default: "."
-  node-version:
-    description: "Node.js version to use"
-    required: false
-    default: "22"
   timeout-seconds:
     description: "Timeout duration for deploying the CDK stack in seconds"
     required: false
@@ -41,19 +42,16 @@ outputs:
 runs:
   using: composite
   steps:
-    # Step 1
     - name: Download Synthesized Template
       uses: actions/download-artifact@v4
       with:
         name: cdk-synth
         path: ${{ inputs.working-directory }}/cdk.out
 
-    # Step 2
     - name: Prepare CDK Environment
       shell: bash
       run: mv ./cdk.out/package*.json .
 
-    # Step 3
     - name: Setup CDK Environment
       uses: banboniera/setup-cdk@v1
       with:
@@ -64,7 +62,6 @@ runs:
         working-directory: ${{ inputs.working-directory }}
         node-version: ${{ inputs.node-version }}
 
-    # Step 4
     - name: Validate Stack
       shell: bash
       run: |
@@ -76,7 +73,6 @@ runs:
         echo "Stack validation successful"
         echo "::endgroup::"
 
-    # Step 5
     - name: Deploy Stack
       id: deploy
       shell: bash
@@ -108,12 +104,11 @@ runs:
 
         echo "END_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
 
-    # Step 6
     - name: Deployment Summary
       if: always()
       shell: bash
       run: |
-        echo "### CDK Stack Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
+        echo "### Summary 🚀" >> $GITHUB_STEP_SUMMARY
         echo "**Stack Name**: \`${{ inputs.stack-name }}\`" >> $GITHUB_STEP_SUMMARY
         echo "**Region**: \`${{ inputs.aws-region }}\`" >> $GITHUB_STEP_SUMMARY
 
@@ -142,7 +137,7 @@ runs:
 
         # Add deployment outputs if available
         if [ -f deployment-outputs.json ]; then
-          echo "### Deployment Outputs 📋" >> $GITHUB_STEP_SUMMARY
+          echo "### Outputs 📋" >> $GITHUB_STEP_SUMMARY
           echo "| Output Key | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|-------|" >> $GITHUB_STEP_SUMMARY
           
