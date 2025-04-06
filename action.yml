@@ -1,73 +1,57 @@
-name: 'CDK Deploy Stack'
+name: "CDK Deploy Stack"
 description: "Deploys a CDK stack using pre-synthesized templates"
 branding:
-  icon: 'upload-cloud'
-  color: 'green'
+  icon: "upload-cloud"
+  color: "green"
 
 inputs:
-  stack-name:
-    description: 'Name of the CDK stack to deploy'
-    required: true
   aws-region:
-    description: 'Target AWS region for deployment'
+    description: "Target AWS region for deployment"
     required: true
   role-to-assume:
-    description: 'AWS IAM role ARN to assume'
+    description: "AWS IAM role ARN to assume"
     required: true
+  stack-name:
+    description: "Name of the CDK stack to deploy"
+    required: false
   artifact-name:
-    description: 'Name for the deployment artifact (default: cdk-deployment-package)'
+    description: "Name for the deployment artifact (default: cdk-deployment-package)"
     required: false
-    default: 'cdk-deployment-package'
+    default: "cdk-deployment-package"
   artifact-path:
-    description: 'Path to store deployment files (default: deployment)'
+    description: "Path to store deployment files (default: deployment)"
     required: false
-    default: 'deployment'
+    default: "deployment"
   node-version:
-    description: 'Node.js version (default: 22)'
+    description: "Node.js version (default: 22)"
     required: false
-    default: '22'
+    default: "22"
   timeout-seconds:
-    description: 'Maximum duration (in seconds) for deployment (default: 1800)'
+    description: "Maximum duration (in seconds) for deployment (default: 1800)"
     required: false
-    default: '1800'
+    default: "1800"
   skip-validation:
-    description: 'Skip stack validation before deployment (default: false)'
+    description: "Skip stack validation before deployment (default: true)"
     required: false
-    default: 'false'
-  execution-id:
-    description: 'Unique identifier for concurrent deployments (default: run_id-run_number)'
-    required: false
-    default: ${{ github.run_id }}-${{ github.run_number }}
-
-outputs:
-  deployment-status:
-    description: 'Result of the deployment (success/failure)'
-    value: ${{ steps.deploy.outputs.status }}
-  failure-reason:
-    description: 'Error message if deployment failed'
-    value: ${{ steps.deploy.outputs.failure-reason }}
-  stack-outputs:
-    description: 'JSON containing stack outputs after deployment'
-    value: ${{ steps.process-outputs.outputs.stack-outputs }}
+    default: "true"
 
 runs:
   using: composite
   steps:
-    - name: Setup Node.js ${{ inputs.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ inputs.node-version }}
-        check-latest: true
-
     - name: Download Synthesized Template
       uses: actions/download-artifact@v4
       with:
         name: ${{ inputs.artifact-name }}
         path: ${{ inputs.artifact-path }}
 
-    - name: Change Working Directory
+    - name: Move Artifact
       shell: bash
-      run: cd ${{ inputs.artifact-path }}
+      run: mv ${{ inputs.artifact-path }}/* .
+
+    - name: Setup Node.js ${{ inputs.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -80,24 +64,29 @@ runs:
       shell: bash
       run: |
         echo "::group::Stack Validation"
-        
-        # Check if cdk.out exists
+
         if [ ! -d "cdk.out" ]; then
           echo "::error::cdk.out directory not found in ${{ inputs.artifact-path }}"
           exit 1
         fi
-        
-        # Validate stack exists in synthesized output
-        if ! grep -q "\"${{ inputs.stack-name }}\"" cdk.out/manifest.json; then
-          echo "::error::Stack ${{ inputs.stack-name }} not found in synthesized output"
-          exit 1
-        fi
-        
-        # Run diff to check for changes
-        if ! npx cdk diff ${{ inputs.stack-name }} --app cdk.out; then
-          echo "::warning::Stack validation detected changes - proceeding with deployment"
+
+        if [ -n "${{ inputs.stack-name }}" ]; then
+          if ! grep -q "\"${{ inputs.stack-name }}\"" cdk.out/manifest.json; then
+            echo "::error::Stack ${{ inputs.stack-name }} not found in synthesized output"
+            exit 1
+          fi
+
+          if ! npx cdk diff ${{ inputs.stack-name }} --app cdk.out; then
+            echo "::warning::Stack validation detected changes - proceeding with deployment"
+          else
+            echo "Stack validation successful - no changes detected"
+          fi
         else
-          echo "Stack validation successful - no changes detected"
+          if ! npx cdk diff --app cdk.out; then
+            echo "::warning::Stack validation detected changes - proceeding with deployment"
+          else
+            echo "Stack validation successful - no changes detected"
+          fi
         fi
         echo "::endgroup::"
 
@@ -105,75 +94,56 @@ runs:
       id: deploy
       shell: bash
       run: |
-        # Initialize status tracking
         echo "status=pending" >> $GITHUB_OUTPUT
-        
-        # Create unique outputs file to prevent conflicts in parallel deployments
-        OUTPUTS_FILE="outputs-${{ inputs.execution-id }}.json"
-        
-        # Execute deployment
-        if timeout ${{ inputs.timeout-seconds }} npx cdk deploy ${{ inputs.stack-name }} \
+
+        if [ -n "${{ inputs.stack-name }}" ]; then
+          DEPLOY_CMD="npx cdk deploy ${{ inputs.stack-name }}"
+        else
+          DEPLOY_CMD="npx cdk deploy --all"
+        fi
+
+        if timeout ${{ inputs.timeout-seconds }} $DEPLOY_CMD \
           --require-approval never \
           --app cdk.out \
-          --outputs-file $OUTPUTS_FILE; then
-          
+          --outputs-file outputs.json; then
           echo "status=success" >> $GITHUB_OUTPUT
           echo "Deployment completed successfully"
         else
           EXIT_CODE=$?
           echo "status=failure" >> $GITHUB_OUTPUT
-          
+
           if [ $EXIT_CODE -eq 124 ]; then
             FAILURE_REASON="Deployment timed out after ${{ inputs.timeout-seconds }} seconds"
           else
             FAILURE_REASON="Deployment failed with exit code $EXIT_CODE"
           fi
-          
           echo "failure-reason=$FAILURE_REASON" >> $GITHUB_OUTPUT
           echo "::error::$FAILURE_REASON"
           exit $EXIT_CODE
         fi
 
-    - name: Process Stack Outputs
-      id: process-outputs
-      if: steps.deploy.outputs.status == 'success'
-      shell: bash
-      run: |
-        OUTPUTS_FILE="outputs-${{ inputs.execution-id }}.json"
-        
-        if [ -f "$OUTPUTS_FILE" ]; then
-          # Extract outputs for this specific stack
-          STACK_OUTPUTS=$(jq -c ".[\"${{ inputs.stack-name }}\"] // {}" $OUTPUTS_FILE)
-          echo "stack-outputs=$STACK_OUTPUTS" >> $GITHUB_OUTPUT
-          
-          # Also save outputs to a more permanent location
-          mkdir -p ../cdk-outputs
-          cp $OUTPUTS_FILE ../cdk-outputs/
-        else
-          echo "stack-outputs={}" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Deployment Summary
+    - name: Process Deployment Results
       if: always()
       shell: bash
       run: |
-        echo "### Deployment Summary for ${{ inputs.stack-name }} 🚀" >> $GITHUB_STEP_SUMMARY
-        echo "**Region**: \`${{ inputs.aws-region }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "### 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
 
-        # Status with emoji
         if [ "${{ steps.deploy.outputs.status }}" == "success" ]; then
           echo "**Status**: ✅ Success" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "**Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
-          echo "**Failure Reason**: ${{ steps.deploy.outputs.failure-reason }}" >> $GITHUB_STEP_SUMMARY
-        fi
-
-        # Add deployment outputs if available
-        if [ "${{ steps.process-outputs.outputs.stack-outputs }}" != "{}" ]; then
+          
           echo "### Outputs 📋" >> $GITHUB_STEP_SUMMARY
           echo "| Output Key | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------------|-------|" >> $GITHUB_STEP_SUMMARY
-          
-          # Parse JSON and convert to table format
-          echo '${{ steps.process-outputs.outputs.stack-outputs }}' | jq -r 'to_entries | .[] | "| \(.key) | `\(.value)` |"' >> $GITHUB_STEP_SUMMARY
+          node -e '
+            const fs = require("fs");
+            const outputs = JSON.parse(fs.readFileSync("outputs.json", "utf8"));
+            Object.entries(outputs).forEach(([stackName, stackOutputs]) => {
+              Object.entries(stackOutputs).forEach(([key, value]) => {
+                console.log(`| ${stackName}.${key} | \`${value}\` |`);
+              });
+            });
+          ' >> $GITHUB_STEP_SUMMARY
+        else
+          echo "**Status**: ❌ Failed" >> $GITHUB_STEP_SUMMARY
+          echo "**Failure Reason**: ${{ steps.deploy.outputs.failure-reason }}" >> $GITHUB_STEP_SUMMARY
         fi
