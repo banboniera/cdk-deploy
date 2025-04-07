@@ -1,14 +1,14 @@
-# CDK Deploy Action
+# CDK Deploy
 
-A GitHub composite action that handles AWS CDK stack deployment with validation and detailed reporting.
+A GitHub composite action that deploys AWS CDK stacks using pre-synthesized templates.
 
 ## Features
 
 - 🔄 Support for both individual stack deployments and full stack deployments
-- 🔍 Optional pre-deployment stack validation with diff checking
 - 📊 Detailed deployment summary with JSON outputs
 - 🔐 AWS IAM role assumption support
-- 📦 Flexible artifact handling with customizable paths
+- 📦 Pre-synthesized template handling
+- ⏱️ Configurable deployment timeout
 
 ## Usage
 
@@ -19,37 +19,34 @@ steps:
     with:
       aws-region: 'eu-central-1'
       role-to-assume: 'arn:aws:iam::123456789012:role/github-actions-role'
-      stack-name: 'my-stack-name'  # optional, if not provided destroys all stacks
+      stack-name: 'my-stack-name'  # optional, if not provided deploys all stacks
       artifact-name: 'cdk-deployment-package'  # optional
-      artifact-path: 'deployment'  # optional
       node-version: '22'  # optional
       timeout-seconds: 1800  # optional
-      skip-validation: 'false'  # optional
+      skip-validation: 'true'  # optional
 ```
 
 ## Inputs
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `stack-name` | Name of the CDK stack to deploy | false | |
 | `aws-region` | Target AWS region for deployment | true | |
 | `role-to-assume` | AWS IAM role ARN to assume | true | |
+| `stack-name` | Name of the CDK stack to deploy | false | |
 | `artifact-name` | Name for the deployment artifact | false | `cdk-deployment-package` |
-| `artifact-path` | Path to store deployment files | false | `deployment` |
 | `node-version` | Node.js version to use | false | `22` |
 | `timeout-seconds` | Maximum duration for deployment in seconds | false | `1800` |
-| `skip-validation` | Skip stack validation before deployment | false | `true` |
 
 ## Deployment Process
 
 1. Downloads the pre-synthesized CDK template from artifacts
 2. Sets up Node.js environment with specified version
-3. Configures AWS credentials using role assumption
-4. Optionally validates the stack using `cdk diff`
-5. Deploys the stack with timeout protection
+3. Installs AWS CDK globally
+4. Configures AWS credentials using role assumption
+5. Deploys the stack with timeout protection and `--no-synth` flag
 6. Generates a detailed deployment summary including:
    - Deployment status
-   - Stack outputs
+   - Stack outputs (saved to outputs.json)
    - Error details (if any)
 
 ## Example Workflow
@@ -83,20 +80,10 @@ jobs:
 ## Real Example Workflow
 
 ```yml
-name: CDK Deploy Staging
+name: Deploy Staging
 
 on:
   workflow_call:
-    secrets:
-      AWS_ACCOUNT_ID:
-        description: 'AWS Account ID'
-        required: true
-      VPS_IP:
-        description: 'IP address of the VPS'
-        required: true
-      VPS_IP_PORTAINER:
-        description: 'IP address of the VPS Portainer'
-        required: true
 
 permissions:
   contents: read
@@ -104,7 +91,7 @@ permissions:
 
 env:
   APPLICATION: ${{ vars.APP_NAME }}-Staging
-  CDK_ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
+  CDK_ROLE_ARN: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.APP_NAME }}-Role-CDK
 
 jobs:
   build-synth:
@@ -120,8 +107,8 @@ jobs:
       APP_NAME: ${{ vars.APP_NAME }}
       ENVIRONMENT: staging
       DOMAIN_NAME: ${{ vars.ORG_NAME }}.${{ vars.TLD }}
-      VPS_IP: ${{ secrets.VPS_IP }}
-      VPS_IP_PORTAINER: ${{ secrets.VPS_IP_PORTAINER }}
+      VPS_IP: ${{ vars.VPS_IP }}
+      VPS_IP_PORTAINER: ${{ vars.VPS_IP_PORTAINER }}
 
     steps:
       - name: Prepare CDK Environment
@@ -180,11 +167,28 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-to-assume: ${{ env.CDK_ROLE_ARN }}
           stack-name: ${{ env.APPLICATION }}-Static-Site-Stack
+
+  app-registry:
+    name: Deploy App Registry Stack
+    needs: [zone-public, static-site]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: app-registry-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Deploy Stack
+        uses: banboniera/cdk-deploy@v2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ env.CDK_ROLE_ARN }}
+          stack-name: ${{ env.APPLICATION }}-AppRegistry-Stack
 ```
 
 ## Notes
 
 - The action requires a pre-synthesized CDK template to be available as an artifact
-- Stack validation is disabled by default (`skip-validation: true`)
 - Deployment timeout is set to 30 minutes by default
 - Detailed deployment results are available in the GitHub Actions step summary
+- The action uses `--no-synth` flag to ensure deployment uses pre-synthesized templates
+- Deployment outputs are automatically saved to `outputs.json` for reference
